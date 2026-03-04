@@ -1,5 +1,8 @@
 {
-  "name": "claude-marketplace",
+  "name": "elbaro-marketplace",
+  "owner": {
+    "name": "elbaro"
+  },
   "plugins": [
     {
       "name": "claude-outline",
