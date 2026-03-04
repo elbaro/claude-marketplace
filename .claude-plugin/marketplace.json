@@ -1,5 +1,5 @@
 {
-  "name": "claude-plugins",
+  "name": "claude-marketplace",
   "plugins": [
     {
       "name": "claude-outline",
