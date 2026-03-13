@@ -17,6 +17,10 @@ High-level commands (fetch-modify-update internally, document text never enters 
     python3 outline_api.py section-read --id=abc123 --heading="Section Name"
     python3 outline_api.py section-delete --id=abc123 --heading="Section Name"
 
+Attachment commands:
+    python3 outline_api.py upload --file=/path/to/file --documentId=<doc-id> [--name=display_name]
+    python3 outline_api.py download --id=<attachment-id> --output=/path/to/save
+
 Environment variables:
     OUTLINE_API_KEY      API token for authentication (required)
     OUTLINE_API_URL      Base URL of the Outline instance (required)
@@ -24,9 +28,11 @@ Environment variables:
 """
 
 import json
+import mimetypes
 import os
 import ssl
 import sys
+import uuid
 import urllib.request
 import urllib.error
 
@@ -35,7 +41,8 @@ import urllib.error
 # High-level commands (fetch → modify → update internally)
 # ---------------------------------------------------------------------------
 
-HIGH_LEVEL_COMMANDS = {"replace", "append", "prepend", "section-read", "section-delete"}
+HIGH_LEVEL_COMMANDS = {"replace", "append", "prepend", "section-read", "section-delete",
+                       "upload", "download"}
 
 
 def _get_doc_text(base_url, api_key, doc_id, verify_ssl):
@@ -194,12 +201,198 @@ def cmd_section_delete(base_url, api_key, params, verify_ssl):
     return update_result
 
 
+def _build_multipart(fields, file_field, file_path, file_content_type):
+    """Build a multipart/form-data body from fields dict and a file.
+
+    Returns (body_bytes, content_type_header).
+    """
+    boundary = uuid.uuid4().hex
+    lines = []
+
+    for key, value in fields.items():
+        lines.append(f"--{boundary}".encode())
+        lines.append(f'Content-Disposition: form-data; name="{key}"'.encode())
+        lines.append(b"")
+        lines.append(str(value).encode("utf-8"))
+
+    # File part
+    filename = os.path.basename(file_path)
+    lines.append(f"--{boundary}".encode())
+    lines.append(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'
+        .encode()
+    )
+    lines.append(f"Content-Type: {file_content_type}".encode())
+    lines.append(b"")
+    with open(file_path, "rb") as f:
+        lines.append(f.read())
+
+    lines.append(f"--{boundary}--".encode())
+    lines.append(b"")
+
+    body = b"\r\n".join(lines)
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return body, content_type
+
+
+def _ssl_context(verify_ssl):
+    """Return an SSL context matching the verify_ssl flag."""
+    if not verify_ssl:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    return None
+
+
+def cmd_upload(base_url, api_key, params, verify_ssl):
+    """Upload a file attachment to a document (2-step process)."""
+    file_path = params.get("file")
+    doc_id = params.get("documentId")
+    display_name = params.get("name")
+
+    if not file_path or not doc_id:
+        print("upload requires --file and --documentId", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isfile(file_path):
+        print(f"File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if not display_name:
+        display_name = os.path.basename(file_path)
+
+    file_size = os.path.getsize(file_path)
+    content_type, _ = mimetypes.guess_type(file_path)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    # Step 1: Create attachment record
+    create_body = {
+        "name": display_name,
+        "documentId": doc_id,
+        "size": file_size,
+        "contentType": content_type,
+    }
+    resp = api_request(base_url, api_key, "attachments.create", create_body, verify_ssl)
+
+    data = resp.get("data", {})
+    upload_url = data.get("uploadUrl")
+    form_fields = data.get("form", {})
+    attachment = data.get("attachment", {})
+
+    if not upload_url:
+        print("attachments.create did not return an uploadUrl", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 2: Upload file bytes via multipart POST
+    # uploadUrl may be relative (e.g. "/api/files.create") or absolute
+    if upload_url.startswith("http"):
+        full_upload_url = upload_url
+    else:
+        # Strip /api suffix from base_url since uploadUrl already includes /api
+        origin = base_url.rstrip("/")
+        if origin.endswith("/api"):
+            origin = origin[:-4]
+        full_upload_url = origin + upload_url
+
+    body, ct_header = _build_multipart(form_fields, "file", file_path, content_type)
+
+    headers = {
+        "Content-Type": ct_header,
+    }
+
+    req = urllib.request.Request(full_upload_url, data=body, headers=headers, method="POST")
+    ctx = _ssl_context(verify_ssl)
+
+    try:
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            pass  # 200 is enough; response body may be empty
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        print(f"File upload HTTP {e.code}: {error_body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"File upload failed: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    att_id = attachment.get("id", "")
+    att_name = attachment.get("name", display_name)
+    redirect_url = f"/api/attachments.redirect?id={att_id}"
+    markdown = f"[{att_name} ({file_size})]({redirect_url})"
+
+    return {
+        "id": att_id,
+        "name": att_name,
+        "size": file_size,
+        "contentType": content_type,
+        "markdown": markdown,
+    }
+
+
+def cmd_download(base_url, api_key, params, verify_ssl):
+    """Download an attachment by ID to a local file."""
+    att_id = params.get("id")
+    output_path = params.get("output")
+
+    if not att_id or not output_path:
+        print("download requires --id and --output", file=sys.stderr)
+        sys.exit(1)
+
+    # Get the redirect URL
+    origin = base_url.rstrip("/")
+    if origin.endswith("/api"):
+        origin = origin[:-4]
+    redirect_url = f"{origin}/api/attachments.redirect?id={att_id}"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    req = urllib.request.Request(redirect_url, headers=headers, method="GET")
+    ctx = _ssl_context(verify_ssl)
+
+    try:
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        print(f"Download HTTP {e.code}: {error_body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Download failed: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(output_path, "wb") as f:
+            f.write(data)
+    except IOError as e:
+        print(f"Error writing to {output_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return {
+        "id": att_id,
+        "output": output_path,
+        "size": len(data),
+    }
+
+
 COMMAND_DISPATCH = {
     "replace": cmd_replace,
     "append": cmd_append,
     "prepend": cmd_prepend,
     "section-read": cmd_section_read,
     "section-delete": cmd_section_delete,
+    "upload": cmd_upload,
+    "download": cmd_download,
 }
 
 
@@ -250,6 +443,8 @@ FILTERS = {
     # comments
     "comments.create": lambda r: _pick(r["data"], ("id", "documentId", "createdAt")),
     "comments.list": lambda r: _pick_list_comments(r),
+    # attachments
+    "attachments.delete": lambda r: _pick(r, ("success",)),
 }
 
 

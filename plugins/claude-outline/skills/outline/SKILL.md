@@ -1,6 +1,6 @@
 ---
 name: outline
-description: Use when reading, searching, creating, updating, or organizing documents and collections in Outline wiki, or managing Outline comments
+description: Use when reading, searching, creating, updating, or organizing documents and collections in Outline wiki, managing Outline comments, or uploading/downloading file attachments
 ---
 
 # Outline API
@@ -23,6 +23,8 @@ Fetch→modify→update internally. Document text never enters context.
 <cmd name="prepend" required="--id --text">Insert after first heading. Supports --text-file</cmd>
 <cmd name="section-read" required="--id --heading">Read one section by heading substring</cmd>
 <cmd name="section-delete" required="--id --heading">Delete section by heading substring</cmd>
+<cmd name="upload" required="--file --documentId" optional="--name">Upload file attachment (2-step). Returns attachment markdown link</cmd>
+<cmd name="download" required="--id --output">Download attachment to local file</cmd>
 </commands>
 
 ## API Endpoints
@@ -54,6 +56,10 @@ Fetch→modify→update internally. Document text never enters context.
 <commands type="comments">
 <cmd name="comments.create" required="--documentId --text" optional="--parentCommentId">Add comment</cmd>
 <cmd name="comments.list" optional="--documentId --collectionId --limit">List comments</cmd>
+</commands>
+
+<commands type="attachments">
+<cmd name="attachments.delete" required="--id">Delete an attachment</cmd>
 </commands>
 
 ## Environment
