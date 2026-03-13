@@ -300,6 +300,7 @@ def cmd_upload(base_url, api_key, params, verify_ssl):
 
     headers = {
         "Content-Type": ct_header,
+        "Authorization": f"Bearer {api_key}",
     }
 
     req = urllib.request.Request(full_upload_url, data=body, headers=headers, method="POST")
