@@ -10,12 +10,16 @@ API endpoints:
     python3 outline_api.py documents.update --id=abc123 --text-file=draft.md
     python3 outline_api.py collections.list --raw
 
-High-level commands (fetch-modify-update internally, document text never enters context):
+High-level commands (fetch-modify-update internally, text never enters context):
+    # Document operations (--id):
     python3 outline_api.py replace --id=abc123 --old="old text" --new="new text"
     python3 outline_api.py append --id=abc123 --text="new content"
     python3 outline_api.py prepend --id=abc123 --text="new content"
     python3 outline_api.py section-read --id=abc123 --heading="Section Name"
     python3 outline_api.py section-delete --id=abc123 --heading="Section Name"
+    # Collection description operations (--collectionId):
+    python3 outline_api.py replace --collectionId=col123 --old="old" --new="new"
+    python3 outline_api.py append --collectionId=col123 --text="new content"
 
 Attachment commands:
     python3 outline_api.py upload --file=/path/to/file --documentId=<doc-id> [--name=display_name]
@@ -45,16 +49,37 @@ HIGH_LEVEL_COMMANDS = {"replace", "append", "prepend", "section-read", "section-
                        "upload", "download"}
 
 
-def _get_doc_text(base_url, api_key, doc_id, verify_ssl):
-    """Fetch document markdown text."""
-    resp = api_request(base_url, api_key, "documents.info", {"id": doc_id}, verify_ssl)
+def _resolve_target(params):
+    """Determine target type and ID from params.
+
+    Returns ("doc", id) if --id is given, ("col", id) if --collectionId is given.
+    """
+    if "collectionId" in params:
+        return "col", params["collectionId"]
+    if "id" in params:
+        return "doc", params["id"]
+    return None, None
+
+
+def _get_text(base_url, api_key, target_type, target_id, verify_ssl):
+    """Fetch text from a document or collection description."""
+    if target_type == "col":
+        resp = api_request(base_url, api_key, "collections.info",
+                           {"id": target_id}, verify_ssl)
+        return resp["data"].get("description") or ""
+    resp = api_request(base_url, api_key, "documents.info",
+                       {"id": target_id}, verify_ssl)
     return resp["data"]["text"]
 
 
-def _update_doc_text(base_url, api_key, doc_id, text, verify_ssl):
-    """Update document text, return compact result."""
+def _update_text(base_url, api_key, target_type, target_id, text, verify_ssl):
+    """Update document text or collection description, return compact result."""
+    if target_type == "col":
+        resp = api_request(base_url, api_key, "collections.update",
+                           {"id": target_id, "description": text}, verify_ssl)
+        return _pick(resp["data"], ("id", "name"))
     resp = api_request(base_url, api_key, "documents.update",
-                       {"id": doc_id, "text": text}, verify_ssl)
+                       {"id": target_id, "text": text}, verify_ssl)
     return _pick(resp["data"], ("id", "title", "revision"))
 
 
@@ -93,54 +118,62 @@ def _find_section(text, heading):
     return None
 
 
+def _require_target(params, cmd_name):
+    """Resolve and validate target, exit on failure."""
+    target_type, target_id = _resolve_target(params)
+    if not target_id:
+        print(f"{cmd_name} requires --id (document) or --collectionId (collection)",
+              file=sys.stderr)
+        sys.exit(1)
+    return target_type, target_id
+
+
 def cmd_replace(base_url, api_key, params, verify_ssl):
-    """Replace text in a document. Supports --old/--new or --old-file/--new-file."""
-    doc_id = params.get("id")
+    """Replace text in a document or collection description."""
+    target_type, target_id = _require_target(params, "replace")
     old = params.get("old")
+    if old is None:
+        print("replace requires --old (or --old-file)", file=sys.stderr)
+        sys.exit(1)
     new = params.get("new", "")
 
-    if not doc_id or old is None:
-        print("replace requires --id and --old (or --old-file)", file=sys.stderr)
-        sys.exit(1)
-
-    text = _get_doc_text(base_url, api_key, doc_id, verify_ssl)
+    text = _get_text(base_url, api_key, target_type, target_id, verify_ssl)
     count = text.count(old)
     if count == 0:
         print(json.dumps({"error": "no match found", "query": old[:200]},
                           ensure_ascii=False, indent=2))
         sys.exit(1)
 
-    new_text = text.replace(old, new)
-    result = _update_doc_text(base_url, api_key, doc_id, new_text, verify_ssl)
+    result = _update_text(base_url, api_key, target_type, target_id,
+                          text.replace(old, new), verify_ssl)
     result["replacements"] = count
     return result
 
 
 def cmd_append(base_url, api_key, params, verify_ssl):
-    """Append text to end of document."""
-    doc_id = params.get("id")
+    """Append text to end of document or collection description."""
+    target_type, target_id = _require_target(params, "append")
     new_content = params.get("text", "")
-    if not doc_id or not new_content:
-        print("append requires --id and --text (or --text-file)", file=sys.stderr)
+    if not new_content:
+        print("append requires --text (or --text-file)", file=sys.stderr)
         sys.exit(1)
 
-    text = _get_doc_text(base_url, api_key, doc_id, verify_ssl)
+    text = _get_text(base_url, api_key, target_type, target_id, verify_ssl)
     text = text.rstrip("\n") + "\n\n" + new_content + "\n"
-    return _update_doc_text(base_url, api_key, doc_id, text, verify_ssl)
+    return _update_text(base_url, api_key, target_type, target_id, text, verify_ssl)
 
 
 def cmd_prepend(base_url, api_key, params, verify_ssl):
-    """Prepend text after the first heading (or at top if no heading)."""
-    doc_id = params.get("id")
+    """Prepend text after the first heading (or at top)."""
+    target_type, target_id = _require_target(params, "prepend")
     new_content = params.get("text", "")
-    if not doc_id or not new_content:
-        print("prepend requires --id and --text (or --text-file)", file=sys.stderr)
+    if not new_content:
+        print("prepend requires --text (or --text-file)", file=sys.stderr)
         sys.exit(1)
 
-    text = _get_doc_text(base_url, api_key, doc_id, verify_ssl)
+    text = _get_text(base_url, api_key, target_type, target_id, verify_ssl)
     lines = text.split("\n")
 
-    # Insert after first heading line, or at top
     insert_at = 0
     for i, line in enumerate(lines):
         if line.lstrip().startswith("#"):
@@ -148,18 +181,19 @@ def cmd_prepend(base_url, api_key, params, verify_ssl):
             break
 
     lines.insert(insert_at, "\n" + new_content + "\n")
-    return _update_doc_text(base_url, api_key, doc_id, "\n".join(lines), verify_ssl)
+    return _update_text(base_url, api_key, target_type, target_id,
+                        "\n".join(lines), verify_ssl)
 
 
 def cmd_section_read(base_url, api_key, params, verify_ssl):
     """Read a single section by heading (substring match)."""
-    doc_id = params.get("id")
+    target_type, target_id = _require_target(params, "section-read")
     heading = params.get("heading")
-    if not doc_id or not heading:
-        print("section-read requires --id and --heading", file=sys.stderr)
+    if not heading:
+        print("section-read requires --heading", file=sys.stderr)
         sys.exit(1)
 
-    text = _get_doc_text(base_url, api_key, doc_id, verify_ssl)
+    text = _get_text(base_url, api_key, target_type, target_id, verify_ssl)
     result = _find_section(text, heading)
     if result is None:
         print(json.dumps({"error": "section not found", "heading": heading},
@@ -173,13 +207,13 @@ def cmd_section_read(base_url, api_key, params, verify_ssl):
 
 def cmd_section_delete(base_url, api_key, params, verify_ssl):
     """Delete a section by heading (substring match)."""
-    doc_id = params.get("id")
+    target_type, target_id = _require_target(params, "section-delete")
     heading = params.get("heading")
-    if not doc_id or not heading:
-        print("section-delete requires --id and --heading", file=sys.stderr)
+    if not heading:
+        print("section-delete requires --heading", file=sys.stderr)
         sys.exit(1)
 
-    text = _get_doc_text(base_url, api_key, doc_id, verify_ssl)
+    text = _get_text(base_url, api_key, target_type, target_id, verify_ssl)
     result = _find_section(text, heading)
     if result is None:
         print(json.dumps({"error": "section not found", "heading": heading},
@@ -192,11 +226,11 @@ def cmd_section_delete(base_url, api_key, params, verify_ssl):
     new_lines = lines[:start] + lines[end:]
     new_text = "\n".join(new_lines)
 
-    # Clean up triple+ blank lines
     while "\n\n\n" in new_text:
         new_text = new_text.replace("\n\n\n", "\n\n")
 
-    update_result = _update_doc_text(base_url, api_key, doc_id, new_text, verify_ssl)
+    update_result = _update_text(base_url, api_key, target_type, target_id,
+                                 new_text, verify_ssl)
     update_result["deleted"] = deleted_heading
     return update_result
 
@@ -523,14 +557,8 @@ def api_request(base_url, api_key, endpoint, body, verify_ssl=True):
 
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-    ssl_context = None
-    if not verify_ssl:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-
     try:
-        with urllib.request.urlopen(req, context=ssl_context) as resp:
+        with urllib.request.urlopen(req, context=_ssl_context(verify_ssl)) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = ""
@@ -567,6 +595,7 @@ _FILE_ARGS = {
     "--text-file=": "text",
     "--old-file=": "old",
     "--new-file=": "new",
+    "--description-file=": "description",
 }
 
 

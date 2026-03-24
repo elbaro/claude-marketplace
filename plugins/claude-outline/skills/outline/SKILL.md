@@ -11,18 +11,18 @@ CLI wrapper for Outline wiki REST API. Compact output by default for token effic
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/outline/scripts/outline_api.py <command> [--param=value ...] [--raw] [--text-file=path]
 ```
 
-`--raw` returns full JSON. `--text-file=path` reads `text` param from file. `--old-file`/`--new-file` for replace with special chars.
+`--raw` returns full JSON. `--text-file=path` reads `text` param from file. `--old-file`/`--new-file` for replace with special chars. `--description-file=path` reads `description` param from file.
 
 ## High-Level Commands
 
-Fetch→modify→update internally. Document text never enters context.
+Fetch→modify→update internally. Text never enters context. All text commands accept **--id** (document) or **--collectionId** (collection description).
 
 <commands type="high-level">
-<cmd name="replace" required="--id --old --new">String replace. Use --old-file/--new-file for text with quotes or newlines</cmd>
-<cmd name="append" required="--id --text">Append to end. Supports --text-file</cmd>
-<cmd name="prepend" required="--id --text">Insert after first heading. Supports --text-file</cmd>
-<cmd name="section-read" required="--id --heading">Read one section by heading substring</cmd>
-<cmd name="section-delete" required="--id --heading">Delete section by heading substring</cmd>
+<cmd name="replace" required="--id|--collectionId --old --new">String replace in document or collection description. Use --old-file/--new-file for text with quotes or newlines</cmd>
+<cmd name="append" required="--id|--collectionId --text">Append to end of document or collection description. Supports --text-file</cmd>
+<cmd name="prepend" required="--id|--collectionId --text">Insert after first heading. Supports --text-file</cmd>
+<cmd name="section-read" required="--id|--collectionId --heading">Read one section by heading substring</cmd>
+<cmd name="section-delete" required="--id|--collectionId --heading">Delete section by heading substring</cmd>
 <cmd name="upload" required="--file --documentId" optional="--name">Upload file attachment (2-step). Returns attachment markdown link</cmd>
 <cmd name="download" required="--id --output">Download attachment to local file</cmd>
 </commands>
@@ -48,7 +48,7 @@ Fetch→modify→update internally. Document text never enters context.
 <cmd name="collections.info" required="--id">Get collection details</cmd>
 <cmd name="collections.list">List all collections (compact: id, name)</cmd>
 <cmd name="collections.create" required="--name" optional="--description --permission">Create collection</cmd>
-<cmd name="collections.update" required="--id" optional="--name --description">Update collection</cmd>
+<cmd name="collections.update" required="--id" optional="--name --description --description-file">Update collection</cmd>
 <cmd name="collections.delete" required="--id">Delete collection</cmd>
 <cmd name="collections.documents" required="--id">Document tree (compact: id, title, url, children)</cmd>
 </commands>

@@ -1,7 +1,7 @@
 {
   "name": "claude-outline",
   "description": "Outline wiki integration for Claude Code — documents, collections, comments via REST API",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": {
     "name": "emppu"
   },
